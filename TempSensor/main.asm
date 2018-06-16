@@ -10,10 +10,16 @@
 
 ; definitions for registers
 .def ADC_TIMER_COUNTER = r19
+.def LED_CURRENT_MODE = r20
 
 ; constant values
 .EQU MAX_ADC_TIMER_COUNT = 20
 .EQU CLEAR_TIMER_COMPARE_VALUE = 98	; CTC value for 10Hz 
+
+; LED DISPLAY MODES
+.EQU LED_LOW_TEMPERATURE = 0x01
+.EQU LED_MEDIUM_TEMPERATURE = 0x02 
+.EQU LED_HIGH_TEMPERATURE = 0x04
 
 ; reset vector
 .org 0x0000
@@ -28,6 +34,7 @@ main:
 	; init the other modules?
 	RCALL PRT_init
 	RCALL TMR_init
+	RCALL LED_init
 	;
 	; set the initial led values
 	RCALL PRT_clearGreenLed
@@ -37,14 +44,52 @@ main:
 
 ; main super loop which performs tasks when intervals have expired
 main_loop:
-	CLI
-	CPI ADC_TIMER_COUNTER, MAX_ADC_TIMER_COUNT
-	BRLT dont_perform_adc_sample
-		RCALL PRT_setGreenLed
-		RCALL PRT_clearRedLed
-dont_perform_adc_sample:
-	SEI
-    RJMP main_loop
+	CLI ; disable interrupts while checking timer count
+	;
+	CPI ADC_TIMER_COUNTER, MAX_ADC_TIMER_COUNT	; check for ADC timer count reached
+	BRLT dont_perform_adc_sample	; branch to end if timer count not yet reached
+		;
+		CLR ADC_TIMER_COUNTER	; reset the adc timer count
+		;
+		CPI LED_CURRENT_MODE, LED_LOW_TEMPERATURE	; check if the current led mode is low temperature
+		BRNE check_medium_mode	; branch to check if mode is medium temperature 
+			;
+			RCALL PRT_setGreenLed	; set led pattern and change mode for now
+			RCALL PRT_clearRedLed
+			;
+			LDI LED_CURRENT_MODE, LED_MEDIUM_TEMPERATURE
+			;
+			RJMP end_of_mode_checking	; matching mode found so jump to the end
+			;
+		check_medium_mode:
+		;
+		CPI LED_CURRENT_MODE, LED_MEDIUM_TEMPERATURE	; check if the current led mode is medium temperature
+		BRNE check_high_mode	; branch to check if mode is high temperature 
+			;
+			RCALL PRT_clearGreenLed	; set led pattern and change mode for now
+			RCALL PRT_setRedLed
+			;
+			LDI LED_CURRENT_MODE, LED_HIGH_TEMPERATURE
+			;
+			RJMP end_of_mode_checking	; matching mode found so jump to the end
+			;
+		check_high_mode:
+		;
+		CPI LED_CURRENT_MODE, LED_HIGH_TEMPERATURE	; check if the current led mode is high temperature
+		BRNE end_of_mode_checking	; should not get to this branch TODO - add error maybe 
+			;
+			RCALL PRT_setGreenLed	; set led pattern and change mode for now
+			RCALL PRT_setRedLed
+			;
+			LDI LED_CURRENT_MODE, LED_LOW_TEMPERATURE
+			;
+			RJMP end_of_mode_checking	; matching mode found so jump to the end
+			;
+		end_of_mode_checking:
+	;
+	dont_perform_adc_sample:
+	SEI	; enable interrupts after timer count has been checked
+    RJMP main_loop	; return to start of main super loop
 
 ; name: PRT_init
 ; desc: initialise the ports 
@@ -83,6 +128,12 @@ PRT_clearRedLed:
 	IN r18, PORTB
 	CBR r18, 0x02
 	OUT PORTB, r18
+	RET
+
+; name: LED_init
+; desc: initialises the led status display variables
+LED_init:
+	LDI LED_CURRENT_MODE, LED_LOW_TEMPERATURE
 	RET
 
 ; name: TMR_init
