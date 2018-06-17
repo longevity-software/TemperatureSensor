@@ -1,5 +1,5 @@
 ;
-; TempSensor.asm
+; main.asm
 ;
 ; Created: 15/06/2018 18:54:18
 ; Author : Graham
@@ -8,40 +8,27 @@
 ; include files
 .include "tn45def.inc"
 
-; definitions for registers
-.def ADC_TIMER_COUNTER = r19
-.def LED_CURRENT_MODE = r20
-
-; constant values
-.EQU MAX_ADC_TIMER_COUNT = 20
-.EQU CLEAR_TIMER_COMPARE_VALUE = 98	; CTC value for 10Hz 
-
-; LED DISPLAY MODES
-.EQU LED_LOW_TEMPERATURE = 0x01
-.EQU LED_MEDIUM_TEMPERATURE = 0x02 
-.EQU LED_HIGH_TEMPERATURE = 0x04
+.DEF MAIN_TEMP_REGISTER = r22
 
 ; reset vector
-.org 0x0000
+.ORG 0x0000
 	RJMP main ; jump to main on a reset
 
 ; timer 0 compare match vector
-.org 0x0020
+.ORG 0x0020
 	RJMP ISR_TIMER0_CTC
 
 ; main program entry point
 main:
-	; init the other modules?
-	RCALL PRT_init
-	RCALL TMR_init
-	RCALL LED_init
-	;
-	; set the initial led values
-	RCALL PRT_clearGreenLed
-	RCALL PRT_setRedLed
-
-	SEI ; enable interrupts
-
+;
+; init the other modules?
+RCALL PRT_init ; initialise the GPIO port
+RCALL TMR_init ; intialise the system timer
+RCALL LED_init ; initialise the LED module
+RCALL ADC_init ; initialise the ADC peripheral
+;
+SEI ; enable interrupts
+;
 ; main super loop which performs tasks when intervals have expired
 main_loop:
 	CLI ; disable interrupts while checking timer count
@@ -51,110 +38,190 @@ main_loop:
 		;
 		CLR ADC_TIMER_COUNTER	; reset the adc timer count
 		;
-		CPI LED_CURRENT_MODE, LED_LOW_TEMPERATURE	; check if the current led mode is low temperature
-		BRNE check_medium_mode	; branch to check if mode is medium temperature 
-			;
-			RCALL PRT_setGreenLed	; set led pattern and change mode for now
-			RCALL PRT_clearRedLed
-			;
-			LDI LED_CURRENT_MODE, LED_MEDIUM_TEMPERATURE
-			;
-			RJMP end_of_mode_checking	; matching mode found so jump to the end
-			;
-		check_medium_mode:
+		RCALL ADC_startConversion; start an ADC conversion
 		;
-		CPI LED_CURRENT_MODE, LED_MEDIUM_TEMPERATURE	; check if the current led mode is medium temperature
-		BRNE check_high_mode	; branch to check if mode is high temperature 
-			;
-			RCALL PRT_clearGreenLed	; set led pattern and change mode for now
-			RCALL PRT_setRedLed
-			;
-			LDI LED_CURRENT_MODE, LED_HIGH_TEMPERATURE
-			;
-			RJMP end_of_mode_checking	; matching mode found so jump to the end
-			;
-		check_high_mode:
-		;
-		CPI LED_CURRENT_MODE, LED_HIGH_TEMPERATURE	; check if the current led mode is high temperature
-		BRNE end_of_mode_checking	; should not get to this branch TODO - add error maybe 
-			;
-			RCALL PRT_setGreenLed	; set led pattern and change mode for now
-			RCALL PRT_setRedLed
-			;
-			LDI LED_CURRENT_MODE, LED_LOW_TEMPERATURE
-			;
-			RJMP end_of_mode_checking	; matching mode found so jump to the end
-			;
-		end_of_mode_checking:
-	;
 	dont_perform_adc_sample:
+	;
 	SEI	; enable interrupts after timer count has been checked
+	;
+	RCALL ADC_isConversionComplete ; get the status of the adc conversion
+	;
+	CPI ADC_TEMP_REGISTER, ADC_CONVERSION_COMPLETE	; compare if the adc temp register is adc conversion complete
+	BRNE conversion_not_complete	; if conversion is not complete then skip updating the mode	
+		; conversion is complete so check temperature
+		RCALL LED_setTemperatureLeds
+	conversion_not_complete:
+	;
     RJMP main_loop	; return to start of main super loop
+
+;;--------------------------------------------------------------------------------------------------------------------------
+;;													Port Module Functions
+;;--------------------------------------------------------------------------------------------------------------------------
+
+.DEF PRT_TEMP_REGISTER = r18
+
+.EQU PRT_RED_LED_BIT = 0x02
+.EQU PRT_GREEN_LED_BIT = 0x10
 
 ; name: PRT_init
 ; desc: initialise the ports 
 PRT_init:
-	LDI r18, 0x1F
-	OUT DDRB, r18
+	LDI PRT_TEMP_REGISTER, 0x37
+	OUT DDRB, PRT_TEMP_REGISTER
 	RET
 
 ; name: PRT_setGreenLed
 ; desc: sets the green LED on
 PRT_setGreenLed:
-	IN r18, PORTB
-	SBR r18, 0x10
-	OUT PORTB, r18
+	IN PRT_TEMP_REGISTER, PORTB
+	SBR PRT_TEMP_REGISTER, PRT_GREEN_LED_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
 	RET
 
 ; name: PRT_clearGreenLed
 ; desc: sets the green LED off
 PRT_clearGreenLed:
-	IN r18, PORTB
-	CBR r18, 0x10
-	OUT PORTB, r18
+	IN PRT_TEMP_REGISTER, PORTB
+	CBR PRT_TEMP_REGISTER, PRT_GREEN_LED_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
 	RET
 
 ; name: PRT_setRedLed
 ; desc: sets the Red LED on
 PRT_setRedLed:
-	IN r18, PORTB
-	SBR r18, 0x02
-	OUT PORTB, r18
+	IN PRT_TEMP_REGISTER, PORTB
+	SBR PRT_TEMP_REGISTER, PRT_RED_LED_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
 	RET
 
 ; name: PRT_clearRedLed
 ; desc: sets the Red LED off
 PRT_clearRedLed:
-	IN r18, PORTB
-	CBR r18, 0x02
-	OUT PORTB, r18
+	IN PRT_TEMP_REGISTER, PORTB
+	CBR PRT_TEMP_REGISTER, PRT_RED_LED_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
 	RET
+
+;;--------------------------------------------------------------------------------------------------------------------------
+;;													LED Module Functions
+;;--------------------------------------------------------------------------------------------------------------------------
+
+.def LED_CURRENT_MODE = r20
+
+; LED DISPLAY MODES
+.EQU LED_LOW_TEMPERATURE = 0x01
+.EQU LED_MEDIUM_TEMPERATURE = 0x02 
+.EQU LED_HIGH_TEMPERATURE = 0x04
+
+.EQU LED_LOW_TO_MEDIUM_THRESHOLD = 40
+.EQU LED_MEDIUM_TO_HIGH_THRESHOLD = 47
+.EQU LED_MEDIUM_TO_LOW_THRESHOLD = 38
+.EQU LED_HIGH_TO_MEDIUM_THRESHOLD = 45
 
 ; name: LED_init
 ; desc: initialises the led status display variables
 LED_init:
-	LDI LED_CURRENT_MODE, LED_LOW_TEMPERATURE
+	RCALL LED_setLowMode
 	RET
+
+; name: LED_setTemperatureLeds
+; desc: sets the LED's based on the adc conversion result	
+LED_setTemperatureLeds:
+	RCALL ADC_getConversionResult	; get the result of the conversion, this will be in ADC_TEMP_REGISTER
+	;
+	CPI LED_CURRENT_MODE, LED_LOW_TEMPERATURE	; check if the current led mode is low temperature
+	BRNE check_medium_mode	; branch to check if mode is medium temperature 
+		;
+		CPI ADC_TEMP_REGISTER, LED_LOW_TO_MEDIUM_THRESHOLD ; check if temperature will move us to the medium mode 
+		BRLT end_of_mode_checking	; if adc conversion result is less than threshold then skip this
+			RCALL LED_setMediumMode	; else update the mode to Medium
+		;
+		RJMP end_of_mode_checking	; matching mode found so jump to the end
+		;
+	check_medium_mode:
+	;
+	CPI LED_CURRENT_MODE, LED_MEDIUM_TEMPERATURE	; check if the current led mode is medium temperature
+	BRNE check_high_mode	; branch to check if mode is high temperature 
+		;
+		CPI ADC_TEMP_REGISTER, LED_MEDIUM_TO_LOW_THRESHOLD	; check if temperature will move us to the low mode 
+		BRGE check_for_med_to_high		; if adc conversion result is greater than threshold then skip this and check for medium to high change
+			RCALL LED_setLowMode		; else update the mode to low
+			RJMP end_of_mode_checking	; then go to end of mode checking
+		check_for_med_to_high:
+		CPI ADC_TEMP_REGISTER, LED_MEDIUM_TO_HIGH_THRESHOLD	;  check if temperature will move us to the high mode 
+		BRLT end_of_mode_checking		; if adc conversion result is less than threshold then skip this
+			RCALL LED_setHighMode		; else update the mode to high
+		;
+		RJMP end_of_mode_checking	; matching mode found so jump to the end
+		;
+	check_high_mode:
+	;
+	CPI LED_CURRENT_MODE, LED_HIGH_TEMPERATURE	; check if the current led mode is high temperature
+	BRNE end_of_mode_checking	; should not get to this branch TODO - add error maybe 
+		;
+		CPI ADC_TEMP_REGISTER, LED_HIGH_TO_MEDIUM_THRESHOLD	; check if temperature will move us to the medium mode 
+		BRGE end_of_mode_checking		; if adc conversion result is greater than threshold then skip this
+			RCALL LED_setMediumMode		; else update the mode to medium
+		;
+		RJMP end_of_mode_checking	; matching mode found so jump to the end
+		;
+	end_of_mode_checking:
+	RET
+
+; name: LED_setLowMode
+; desc: sets the LED state to low mode
+LED_setLowMode:
+	RCALL PRT_setGreenLed	; set led pattern and change mode for now
+	RCALL PRT_clearRedLed
+	;
+	LDI LED_CURRENT_MODE, LED_LOW_TEMPERATURE	; set the mode to low
+	RET
+
+; name: LED_setMediumMode
+; desc: sets the LED state to medium mode
+LED_setMediumMode:
+	RCALL PRT_clearGreenLed	; set led pattern and change mode
+	RCALL PRT_setRedLed
+	;
+	LDI LED_CURRENT_MODE, LED_MEDIUM_TEMPERATURE	; set the mode to medium
+	RET
+
+; name: LED_setHighMode
+; desc: sets the LED state to high mode
+LED_setHighMode:
+	RCALL PRT_setGreenLed	; set led pattern and change mode
+	RCALL PRT_setRedLed
+	;
+	LDI LED_CURRENT_MODE, LED_HIGH_TEMPERATURE	; set the mode to high
+	RET
+
+;;--------------------------------------------------------------------------------------------------------------------------
+;;													Timer Module Functions
+;;--------------------------------------------------------------------------------------------------------------------------
+
+.DEF TMR_TEMP_REGISTER = r23
+
+.EQU CLEAR_TIMER_COMPARE_VALUE = 98	; CTC value for 10Hz 
 
 ; name: TMR_init
 ; desc: initialises the timer for a 10mS tick
 TMR_init:
 	; Set Clear timer on compare match mode
-	IN r18, TCCR0A
-	SBR r18, 2
-	OUT TCCR0A, r18
+	IN TMR_TEMP_REGISTER, TCCR0A
+	SBR TMR_TEMP_REGISTER, 2
+	OUT TCCR0A, TMR_TEMP_REGISTER
 	;
 	; clock div 1024
-	LDI r18, 0x05
-	OUT TCCR0B, r18
+	LDI TMR_TEMP_REGISTER, 0x05
+	OUT TCCR0B, TMR_TEMP_REGISTER
 	;
 	; set compare match value
-	LDI r18, CLEAR_TIMER_COMPARE_VALUE
-	OUT OCR0A, r18
+	LDI TMR_TEMP_REGISTER, CLEAR_TIMER_COMPARE_VALUE
+	OUT OCR0A, TMR_TEMP_REGISTER
 	;
 	; interrupt enable
-	LDI r18, 0x10
-	OUT TIMSK, r18
+	LDI TMR_TEMP_REGISTER, 0x10
+	OUT TIMSK, TMR_TEMP_REGISTER
 	;
 	; clear adc timer count
 	CLR ADC_TIMER_COUNTER
@@ -165,3 +232,67 @@ TMR_init:
 ISR_TIMER0_CTC:
 	INC ADC_TIMER_COUNTER
 	RETI
+
+;;--------------------------------------------------------------------------------------------------------------------------
+;;													ADC Module Functions
+;;--------------------------------------------------------------------------------------------------------------------------
+
+.def ADC_TIMER_COUNTER = r19
+.def ADC_TEMP_REGISTER = r21
+
+; constant values
+.EQU MAX_ADC_TIMER_COUNT = 5
+
+.EQU ADC_INTERNAL_1_1V_REFERENCE = 0x80
+.EQU ADC_LEFT_ADJUST_RESULT = 0x20
+.EQU ADC_ADC3_MUX = 0x03
+
+.EQU ADC_ENABLE_ADC	= 0x80
+.EQU ADC_START_CONVERSION = 0x40
+.EQU ADC_CONVERSION_COMPLETE = 0x10
+.EQU ADC_INTERRUPT_ENABLE = 0x08
+.EQU ADC_CLOCK_DIV_128 = 0x07
+
+.EQU ADC_DISABLE_ADC3_DIGITAL_INPUT = 0x08
+
+; name: ADC_init
+; desc: initialises the ADC peripheral
+ADC_init:
+	; set the internal 1.1V reference, left adjusted result and ADC3 channel 
+	LDI ADC_TEMP_REGISTER, ADC_INTERNAL_1_1V_REFERENCE
+	SBR ADC_TEMP_REGISTER, ADC_LEFT_ADJUST_RESULT
+	SBR ADC_TEMP_REGISTER, ADC_ADC3_MUX
+	OUT ADMUX, ADC_TEMP_REGISTER
+	;
+	LDI ADC_TEMP_REGISTER, ADC_ENABLE_ADC
+	SBR ADC_TEMP_REGISTER, ADC_CLOCK_DIV_128
+	OUT ADCSRA, ADC_TEMP_REGISTER
+	;
+	LDI ADC_TEMP_REGISTER, ADC_DISABLE_ADC3_DIGITAL_INPUT
+	OUT DIDR0, ADC_TEMP_REGISTER
+	;
+	RET
+
+; name: ADC_startConversion
+; desc: starts an ADC conversion
+ADC_startConversion:
+	IN ADC_TEMP_REGISTER, ADCSRA
+	SBR ADC_TEMP_REGISTER, ADC_START_CONVERSION
+	OUT ADCSRA, ADC_TEMP_REGISTER
+	RET	
+
+; name: ADC_isConversionComplete
+; desc: sets the value in ADC_TEMP_REGISTER if the ADC conversion is complete
+ADC_isConversionComplete:
+	IN ADC_TEMP_REGISTER, ADCSRA
+	ANDI ADC_TEMP_REGISTER, ADC_CONVERSION_COMPLETE
+	RET
+
+; name: ADC_getConversionResult
+; desc: sets the value in ADC_TEMP_REGISTER to the ADC conversion result
+ADC_getConversionResult:
+	IN ADC_TEMP_REGISTER, ADCSRA
+	OUT ADCSRA, ADC_TEMP_REGISTER	; clear the interrupt flag
+	;
+	IN ADC_TEMP_REGISTER, ADCH	; get the adc conversion result
+	RET
