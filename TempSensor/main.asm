@@ -26,6 +26,10 @@ RCALL PRT_init ; initialise the GPIO port
 RCALL TMR_init ; intialise the system timer
 RCALL LED_init ; initialise the LED module
 RCALL ADC_init ; initialise the ADC peripheral
+RCALL TWI_init ; initialise the TWI peripheral
+;
+LDI TWI_DATA_REGISTER, 0x12
+RCALL TWI_transmit_data
 ;
 SEI ; enable interrupts
 ;
@@ -60,8 +64,12 @@ main_loop:
 
 .DEF PRT_TEMP_REGISTER = r18
 
-.EQU PRT_RED_LED_BIT = 0x02
-.EQU PRT_GREEN_LED_BIT = 0x10
+.EQU PRT_RED_LED_BIT = 0x10
+.EQU PRT_BLUE_LED_BIT = 0x02
+
+.EQU PRT_TWI_CLOCK_BIT = 0x04
+.EQU PRT_TWI_CLOCK_BIT_POSITION = 2
+.EQU PRT_TWI_SDA_BIT = 0x01
 
 ; name: PRT_init
 ; desc: initialise the ports 
@@ -70,19 +78,19 @@ PRT_init:
 	OUT DDRB, PRT_TEMP_REGISTER
 	RET
 
-; name: PRT_setGreenLed
-; desc: sets the green LED on
-PRT_setGreenLed:
+; name: PRT_setBlueLed
+; desc: sets the Blue LED on
+PRT_setBlueLed:
 	IN PRT_TEMP_REGISTER, PORTB
-	SBR PRT_TEMP_REGISTER, PRT_GREEN_LED_BIT
+	SBR PRT_TEMP_REGISTER, PRT_BLUE_LED_BIT
 	OUT PORTB, PRT_TEMP_REGISTER
 	RET
 
-; name: PRT_clearGreenLed
-; desc: sets the green LED off
-PRT_clearGreenLed:
+; name: PRT_clearBlueLed
+; desc: sets the Blue LED off
+PRT_clearBlueLed:
 	IN PRT_TEMP_REGISTER, PORTB
-	CBR PRT_TEMP_REGISTER, PRT_GREEN_LED_BIT
+	CBR PRT_TEMP_REGISTER, PRT_BLUE_LED_BIT
 	OUT PORTB, PRT_TEMP_REGISTER
 	RET
 
@@ -101,6 +109,54 @@ PRT_clearRedLed:
 	CBR PRT_TEMP_REGISTER, PRT_RED_LED_BIT
 	OUT PORTB, PRT_TEMP_REGISTER
 	RET
+	
+; name: PRT_setTwiClockLow
+; desc: sets the twi clock line low 
+PRT_setTwiClockLow:
+	IN PRT_TEMP_REGISTER, PORTB
+	CBR PRT_TEMP_REGISTER, PRT_TWI_CLOCK_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
+	RET
+
+; name: PRT_setTwiClockHigh
+; desc: sets the twi clock line high 
+PRT_setTwiClockHigh:
+	IN PRT_TEMP_REGISTER, PORTB
+	SBR PRT_TEMP_REGISTER, PRT_TWI_CLOCK_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
+	RET
+
+; name: PRT_setTwiSdaAsOutput
+; desc: sets the twi sda line as an output 
+PRT_setTwiSdaAsOutput:
+	IN PRT_TEMP_REGISTER, DDRB
+	CBR PRT_TEMP_REGISTER, PRT_TWI_SDA_BIT
+	OUT DDRB, PRT_TEMP_REGISTER
+	RET
+
+; name: PRT_setTwiSdaAsInput
+; desc: sets the twi sda line as an input 
+PRT_setTwiSdaAsInput:
+	IN PRT_TEMP_REGISTER, DDRB
+	SBR PRT_TEMP_REGISTER, PRT_TWI_SDA_BIT
+	OUT DDRB, PRT_TEMP_REGISTER
+	RET
+
+; name: PRT_setTwiSdaLow
+; desc: sets the twi sda line low 
+PRT_setTwiSdaLow:
+	IN PRT_TEMP_REGISTER, PORTB
+	CBR PRT_TEMP_REGISTER, PRT_TWI_SDA_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
+	RET
+
+; name: PRT_setTwiSdaHigh
+; desc: sets the twi sda line high 
+PRT_setTwiSdaHigh:
+	IN PRT_TEMP_REGISTER, PORTB
+	CBR PRT_TEMP_REGISTER, PRT_TWI_SDA_BIT
+	OUT PORTB, PRT_TEMP_REGISTER
+	RET
 
 ;;--------------------------------------------------------------------------------------------------------------------------
 ;;													LED Module Functions
@@ -113,10 +169,10 @@ PRT_clearRedLed:
 .EQU LED_MEDIUM_TEMPERATURE = 0x02 
 .EQU LED_HIGH_TEMPERATURE = 0x04
 
-.EQU LED_LOW_TO_MEDIUM_THRESHOLD = 40
-.EQU LED_MEDIUM_TO_HIGH_THRESHOLD = 47
-.EQU LED_MEDIUM_TO_LOW_THRESHOLD = 38
-.EQU LED_HIGH_TO_MEDIUM_THRESHOLD = 45
+.EQU LED_LOW_TO_MEDIUM_THRESHOLD = 40		// 16.8°C approx
+.EQU LED_MEDIUM_TO_HIGH_THRESHOLD = 47		// 19.8°C approx
+.EQU LED_MEDIUM_TO_LOW_THRESHOLD = 38		// 16.0°C approx
+.EQU LED_HIGH_TO_MEDIUM_THRESHOLD = 45		// 18.8°C approx
 
 ; name: LED_init
 ; desc: initialises the led status display variables
@@ -171,7 +227,7 @@ LED_setTemperatureLeds:
 ; name: LED_setLowMode
 ; desc: sets the LED state to low mode
 LED_setLowMode:
-	RCALL PRT_setGreenLed	; set led pattern and change mode for now
+	RCALL PRT_setBlueLed	; set led pattern and change mode for now
 	RCALL PRT_clearRedLed
 	;
 	LDI LED_CURRENT_MODE, LED_LOW_TEMPERATURE	; set the mode to low
@@ -180,8 +236,8 @@ LED_setLowMode:
 ; name: LED_setMediumMode
 ; desc: sets the LED state to medium mode
 LED_setMediumMode:
-	RCALL PRT_clearGreenLed	; set led pattern and change mode
-	RCALL PRT_setRedLed
+	RCALL PRT_clearBlueLed	; set led pattern and change mode
+	RCALL PRT_clearRedLed
 	;
 	LDI LED_CURRENT_MODE, LED_MEDIUM_TEMPERATURE	; set the mode to medium
 	RET
@@ -189,7 +245,7 @@ LED_setMediumMode:
 ; name: LED_setHighMode
 ; desc: sets the LED state to high mode
 LED_setHighMode:
-	RCALL PRT_setGreenLed	; set led pattern and change mode
+	RCALL PRT_clearBlueLed	; set led pattern and change mode
 	RCALL PRT_setRedLed
 	;
 	LDI LED_CURRENT_MODE, LED_HIGH_TEMPERATURE	; set the mode to high
@@ -295,4 +351,66 @@ ADC_getConversionResult:
 	OUT ADCSRA, ADC_TEMP_REGISTER	; clear the interrupt flag
 	;
 	IN ADC_TEMP_REGISTER, ADCH	; get the adc conversion result
+	RET
+
+	
+;;--------------------------------------------------------------------------------------------------------------------------
+;;													TWI Module Functions
+;;--------------------------------------------------------------------------------------------------------------------------
+
+.DEF TWI_TEMP_REGISTER = r24
+.DEF TWI_DATA_REGISTER = r25
+
+.EQU RELEASED_DATA = 0xFF
+.EQU USICR_TWO_WIRE_MODE = 0x20
+.EQU USICR_CLOCK_STROBE_MODE = 0x0A
+
+.EQU USISR_START_CONDITION_FLAG = 0x80
+.EQU USISR_COUNTER_OVERFLOW_FLAG = 0x40
+.EQU USISR_STOP_CONDITION_FLAG = 0x20
+.EQU USISR_DATA_COLLISION_FLAG = 0x10
+
+; name: TWI_init
+; desc: initialises the TWI peripheral
+TWI_init:
+	LDI TWI_TEMP_REGISTER, RELEASED_DATA
+	OUT USIDR, TWI_TEMP_REGISTER			; set the initial data in the USIDR 
+	;
+	LDI TWI_TEMP_REGISTER, USICR_TWO_WIRE_MODE
+	SBR TWI_TEMP_REGISTER, USICR_CLOCK_STROBE_MODE
+	OUT USICR, TWI_TEMP_REGISTER			; set the USI for two wire mode 
+	;
+	LDI TWI_TEMP_REGISTER, USISR_START_CONDITION_FLAG
+	SBR TWI_TEMP_REGISTER, USISR_COUNTER_OVERFLOW_FLAG
+	SBR TWI_TEMP_REGISTER, USISR_STOP_CONDITION_FLAG
+	SBR TWI_TEMP_REGISTER, USISR_DATA_COLLISION_FLAG
+	OUT USISR, TWI_TEMP_REGISTER			; clear the condition flags
+	;
+	RET
+
+; name: TWI_transmit_data
+; desc: transmits data to the twi peripheral
+TWI_transmit_data:
+	RCALL PRT_setTwiClockHigh
+	;
+	wait_for_clock_line_to_go_high:
+		;
+		SBIS PORTB, PRT_TWI_CLOCK_BIT_POSITION
+		RJMP wait_for_clock_line_to_go_high
+	;
+	RCALL TWI_shortDelay
+	;
+
+	RET
+
+; name: TWI_shortDelay
+; desc: short delay function 
+TWI_shortDelay:
+	
+	RET
+
+; name: TWI_longDelay
+; desc: long delay function 
+TWI_longDelay:
+	
 	RET
